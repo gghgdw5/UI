@@ -9,8 +9,39 @@
 
 local Lighting = game:GetService("Lighting")
 
-local LiquidBounce = loadstring(game:HttpGet("https://raw.githubusercontent.com/gghgdw5/UI/main/LiquidBounce.lua"))()
--- If the file sits next to this script:
+-- The library currently lives on the arena/884cf208-ui branch (it is not on
+-- main yet), so /main/LiquidBounce.lua would 404 and return nil. Try both.
+local LIBRARY_URLS = {
+	"https://raw.githubusercontent.com/gghgdw5/UI/arena/884cf208-ui/LiquidBounce.lua",
+	"https://raw.githubusercontent.com/gghgdw5/UI/main/LiquidBounce.lua",
+}
+
+local function loadLibrary()
+	local firstError = nil
+	for _, url in ipairs(LIBRARY_URLS) do
+		local ok, source = pcall(function()
+			return game:HttpGet(url, true)
+		end)
+		if ok and type(source) == "string" and #source > 2000 and not source:find("404: Not Found", 1, true) then
+			local chunk, compileError = loadstring(source)
+			if chunk then
+				local ran, lib = pcall(chunk)
+				if ran and type(lib) == "table" and lib.CreateWindow then
+					return lib
+				end
+				firstError = firstError or (ran and "the library returned no API" or tostring(lib))
+			else
+				firstError = firstError or tostring(compileError)
+			end
+		else
+			firstError = firstError or tostring(ok and "HTTP body was not the library (404?)" or source)
+		end
+	end
+	error("[LiquidBounce] could not load the library: " .. tostring(firstError or "unknown error") .. "\n   tried: " .. table.concat(LIBRARY_URLS, ", "), 0)
+end
+
+local LiquidBounce = loadLibrary()
+-- If the file sits next to your script instead, drop everything above and use:
 -- local LiquidBounce = loadstring(readfile("LiquidBounce.lua"))()
 
 local Window = LiquidBounce:CreateWindow({

@@ -17,15 +17,26 @@ logo's blue accent (`#0A84FF`). The droplet logo is drawn in code — no image a
 
 ## Loading
 
-```lua
-local LiquidBounce = loadstring(game:HttpGet("https://raw.githubusercontent.com/gghgdw5/UI/main/LiquidBounce.lua"))()
-```
-
-or, when the file is next to your script:
+The library currently lives on the `arena/884cf208-ui` branch, **not on `main`** — a URL
+pointing at `/main/LiquidBounce.lua` returns a 404 page, `loadstring` returns `nil`, and
+you get `attempt to index nil with 'CreateWindow'`. Use one of these:
 
 ```lua
-local LiquidBounce = loadstring(readfile("LiquidBounce.lua"))()
+-- 1. direct (branch URL, works today)
+local LiquidBounce = assert(loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/gghgdw5/UI/arena/884cf208-ui/LiquidBounce.lua", true)))()
+
+-- 2. after the library is merged into main
+local LiquidBounce = assert(loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/gghgdw5/UI/main/LiquidBounce.lua", true)))()
+
+-- 3. library file next to your script
+local LiquidBounce = assert(loadstring(readfile("LiquidBounce.lua")))()
 ```
+
+`Example.lua` already contains a loader that tries the branch URL first and falls back to
+`main`, and raises a readable error (`[LiquidBounce] could not load the library: ...`)
+instead of returning `nil`.
 
 Creating a second instance automatically unloads the previous one, so re-executing does
 not stack GUIs.

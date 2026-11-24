@@ -4,7 +4,9 @@
 
 	Quick start
 	-----------
-	local LiquidBounce = loadstring(game:HttpGet("https://raw.githubusercontent.com/gghgdw5/UI/main/LiquidBounce.lua"))()
+	local LiquidBounce = assert(loadstring(game:HttpGet(
+		"https://raw.githubusercontent.com/gghgdw5/UI/arena/884cf208-ui/LiquidBounce.lua", true)))()
+	-- (until this file is merged into main, /main/LiquidBounce.lua is a 404)
 
 	local Window = LiquidBounce:CreateWindow({
 		Title = "LiquidBounce",
@@ -43,10 +45,26 @@ local Lighting = game:GetService("Lighting")
 local HttpService = game:GetService("HttpService")
 
 local env = (typeof(getgenv) == "function" and getgenv()) or _G
-if type(env.LiquidBounce) == "table" and type(env.LiquidBounce.Destroy) == "function" then
-	pcall(function()
-		env.LiquidBounce:Destroy()
-	end)
+do
+	-- re-executing the script replaces the previous instance instead of stacking GUIs
+	local previous = env.LiquidBounce
+	if type(previous) == "table" then
+		if type(previous.Destroy) == "function" then
+			pcall(function()
+				previous:Destroy()
+			end)
+		elseif type(previous.Unload) == "function" then
+			pcall(function()
+				previous:Unload()
+			end)
+		elseif type(previous.Windows) == "table" then
+			for _, window in ipairs(previous.Windows) do
+				pcall(function()
+					window:Destroy()
+				end)
+			end
+		end
+	end
 end
 
 local LocalPlayer = Players.LocalPlayer
@@ -634,6 +652,7 @@ function Library:CreateWindow(config)
 	local layout = tostring(opt(config, "columns", "Layout", "Style")):lower()
 	local isColumns = layout ~= "sidebar" and layout ~= "tabs" and layout ~= "single"
 	local columnCount = opt(config, 7, "Columns", "ColumnCount")
+	local perRow = math.max(1, opt(config, columnCount, "ColumnsPerRow", "PerRow"))
 	local size = opt(config, { 940, 600 }, "Size")
 	local defaultWidth = size[1] or 940
 	local defaultHeight = size[2] or 600
@@ -782,7 +801,7 @@ function Library:CreateWindow(config)
 		searchBox.Parent = sidebar
 
 		tabList = new("ScrollingFrame", {
-			Size = UDim2.new(1, 0, 1, -110),
+			Size = UDim2.new(1, 0, 1, -112),
 			CanvasSize = UDim2.new(0, 0, 0, 0),
 			AutomaticCanvasSize = Enum.AutomaticSize.Y,
 			BackgroundTransparency = 1,
@@ -957,6 +976,8 @@ function Library:CreateWindow(config)
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			HorizontalAlignment = Enum.HorizontalAlignment.Center,
 			VerticalAlignment = Enum.VerticalAlignment.Top,
+			-- more categories than fit in one row wrap onto a second row
+			FillDirectionMaxCells = perRow > 1 and perRow or 0,
 		})
 		columnLayout.Parent = columnHolder
 		columnHolder.Parent = outer
