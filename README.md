@@ -145,3 +145,27 @@ Theme keys: `Accent`, `AccentDark`, `Background`, `Card`, `Stroke`, `Text`, `Sub
   scale; controls inside a card are laid out by a `UIListLayout`.
 * Dropdowns, multi-dropdowns and the colour picker open in a popup reparented to the
   ScreenGui, clamped to the viewport, and close on outside click.
+
+## Troubleshooting
+
+| Error | Cause / fix |
+| --- | --- |
+| `attempt to index nil with 'CreateWindow'` | `game:HttpGet` returned `nil`/a 404 page. The library is on the `arena/884cf208-ui` branch — use that URL (see *Loading*), or copy `LiquidBounce.lua` locally. |
+| `X is not a valid member of UIListLayout` | Fixed in 1.1.0: columns are laid out by an explicit grid instead of `FillDirectionMaxCells`, which only exists on `UIGridLayout`. |
+| Nothing shows up | Check the toggle key (`RightControl` by default), or call `Window:Toggle(true)`. Without a `BlurEffect` in `Lighting` the glass looks flatter but still works. |
+| Popups stuck open | Click anywhere outside them; they close on the next mouse press. |
+
+## Changelog
+
+### 1.1.0
+* Column layout rewritten: columns are positioned by an explicit grid (`Window._RelayoutColumns`),
+  so any number of categories works, wraps onto further rows and no longer overlaps.
+* Fixed invalid property usage: `FillDirectionMaxCells` on `UIListLayout`, `ZIndex` on `UIStroke`,
+  `GroupTransparency` on plain `Frame`s, `AutomaticSize` on `ScrollingFrame`.
+* Hiding the menu in `columns` layout now fades only the content — the floating
+  `LIQUID BOUNCE` bar stays clickable to reopen it.
+* `Util.tween` maps `GroupTransparency` <-> `BackgroundTransparency` depending on the class.
+* Search no longer hides every column when `SelectTab` runs; filtered columns are restored.
+* Bad user input (non-numeric slider bounds, non-table dropdown options, non-key keybinds,
+  nil textbox defaults) is sanitised instead of erroring.
+* Popups guard `Destroying` so executors without it cannot crash the UI.

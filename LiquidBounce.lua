@@ -35,7 +35,7 @@
 	LiquidBounce:SaveConfig(name) / :LoadConfig(name) (executor filesystem).
 ]]
 
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -156,7 +156,18 @@ function Util.list(dir, gap)
 	})
 end
 
+-- CanvasGroup has GroupTransparency, plain Frames only have BackgroundTransparency
 function Util.tween(obj, t, props, style, dir)
+	if obj and obj.ClassName ~= "CanvasGroup" and props.GroupTransparency ~= nil and props.BackgroundTransparency == nil then
+		local alpha = props.GroupTransparency
+		props.GroupTransparency = nil
+		props.BackgroundTransparency = alpha
+	end
+	if obj and obj.ClassName == "CanvasGroup" and props.BackgroundTransparency ~= nil and props.GroupTransparency == nil then
+		local alpha = props.BackgroundTransparency
+		props.BackgroundTransparency = nil
+		props.GroupTransparency = alpha
+	end
 	local tw = TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
 	tw:Play()
 	return tw
@@ -612,7 +623,12 @@ function Library:SetWatermark(enabled)
 		local frames = 0
 		local last = os.clock()
 		while watermarkAlive and watermark and watermark.Parent do
-			RunService.Heartbeat:Wait()
+			local ok = pcall(function()
+				RunService.Heartbeat:Wait()
+			end)
+			if not ok then
+				break
+			end
 			frames = frames + 1
 			local now = os.clock()
 			if now - last >= 0.5 then
@@ -680,6 +696,7 @@ function Library:CreateWindow(config)
 		_tabs = {},
 		_selectedTab = nil,
 		_open = true,
+		_baseScale = 1,
 		_isColumns = isColumns,
 		Root = windowRoot,
 	}
@@ -738,7 +755,7 @@ function Library:CreateWindow(config)
 			BackgroundTransparency = 1,
 			BorderSizePixel = 0,
 			Parent = windowRoot,
-		}, { Util.pad(14, 14, 12, 14), Util.list(Enum.FillDirection.Vertical, 8) })
+		})
 
 		local header = new("Frame", {
 			Size = UDim2.new(1, 0, 0, 46),
@@ -905,97 +922,83 @@ function Library:CreateWindow(config)
 		end))
 	else
 		-- ----------------------------------------------------------------
-		-- Classic column layout
+		-- Classic column layout: one glass column per category
 		-- ----------------------------------------------------------------
-		-- tinted glass backdrop that follows the columns' width
+		-- everything inside contentGroup fades as one piece, which keeps the
+		-- floating title bar usable while the columns are hidden
+		local contentGroup = new("CanvasGroup", {
+			Size = UDim2.new(1, 0, 1, 0),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			GroupTransparency = 0,
+			ZIndex = 1,
+			Parent = windowRoot,
+		})
+		Window._contentHolder = contentGroup
+
+		-- soft sheet behind the columns; sized to the grid by _RelayoutColumns
 		local sheet = new("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.new(0.5, 0, 0.5, 0),
-			Size = UDim2.new(0, 0, 1, -20),
+			Size = UDim2.new(0, 0, 0, 0),
 			BackgroundColor3 = Theme.Background,
-			BackgroundTransparency = 0.22,
+			BackgroundTransparency = 0.3,
 			BorderSizePixel = 0,
-			ZIndex = 0,
-			Parent = windowRoot,
+			ZIndex = 1,
+			Parent = contentGroup,
 		}, {
 			Util.corner(26),
 			new("UIStroke", {
 				Color = Theme.Stroke, Transparency = 0.9, Thickness = 1,
-				ApplyStrokeMode = Enum.ApplyStrokeMode.Border, ZIndex = 0,
-			}),
-			new("UIGradient", {
-				Rotation = 45,
-				Transparency = NumberSequence.new({
-					NumberSequenceKeypoint.new(0, 0.55),
-					NumberSequenceKeypoint.new(0.5, 0.86),
-					NumberSequenceKeypoint.new(1, 0.55),
-				}),
+				ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
 			}),
 		})
-		Util.tween(sheet, 0.4, { Size = UDim2.new(0, defaultWidth - 24, 1, -20) }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		Window._sheet = sheet
 
-		-- columns scroll horizontally when the window is narrower than the row
 		local columnScroll = new("ScrollingFrame", {
 			Size = UDim2.new(1, 0, 1, 0),
 			CanvasSize = UDim2.new(0, 0, 0, 0),
-			AutomaticCanvasSize = Enum.AutomaticSize.X,
-			ScrollingDirection = Enum.ScrollingDirection.X,
+			ScrollingDirection = Enum.ScrollingDirection.XY,
 			BackgroundTransparency = 1,
 			BorderSizePixel = 0,
 			ScrollBarThickness = 3,
 			ScrollBarImageColor3 = Theme.Accent,
 			ZIndex = 2,
-			Parent = windowRoot,
+			Parent = contentGroup,
 		})
 		Window._columnScroll = columnScroll
-		local outer = new("Frame", {
-			Size = UDim2.new(1, 0, 1, 0),
+
+		-- columns are absolutely positioned inside this holder (see _RelayoutColumns)
+		pageHolder = new("Frame", {
+			Position = UDim2.new(0, 0, 0, 0),
+			Size = UDim2.new(0, 0, 0, 0),
 			BackgroundTransparency = 1,
 			BorderSizePixel = 0,
 			ZIndex = 2,
-			Parent = columnScroll,
-		}, {
-			Util.pad(10),
-			new("UIListLayout", {
-				FillDirection = Enum.FillDirection.Horizontal,
-				Padding = UDim.new(0, 8),
-				SortOrder = Enum.SortOrder.LayoutOrder,
-				HorizontalAlignment = Enum.HorizontalAlignment.Center,
-				VerticalAlignment = Enum.VerticalAlignment.Top,
-			}),
 		})
+		pageHolder.Parent = columnScroll
+		Window._columnHolder = pageHolder
+		Window._perRow = perRow
+		Window._columnWidth = 186
+		Window._columnGap = 8
 
-		local columnHolder = new("Frame", {
-			Size = UDim2.new(1, 0, 1, 0),
-			BackgroundTransparency = 1,
-			BorderSizePixel = 0,
-		})
-		local columnLayout = new("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			Padding = UDim.new(0, 8),
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			HorizontalAlignment = Enum.HorizontalAlignment.Center,
-			VerticalAlignment = Enum.VerticalAlignment.Top,
-			-- more categories than fit in one row wrap onto a second row
-			FillDirectionMaxCells = perRow > 1 and perRow or 0,
-		})
-		columnLayout.Parent = columnHolder
-		columnHolder.Parent = outer
-
-		pageHolder = columnHolder
-
-		-- title bar: droplet + LIQUID BOUNCE, used as the drag handle
+		-- title bar: droplet + LIQUID BOUNCE, doubles as the drag handle
 		local titleBar = glass(windowRoot, 16, Theme.Card, Theme.CardTransparency)
 		titleBar.AnchorPoint = Vector2.new(0.5, 0)
 		titleBar.Position = UDim2.new(0.5, 0, 0, -54)
 		titleBar.Size = UDim2.new(0, 244, 0, 44)
-		titleBar.ZIndex = 2
+		titleBar.ZIndex = 4
 		titleBar.Active = true
 		Window.TitleBar = titleBar
 
 		local barLogo = createLogo(titleBar, 26)
 		barLogo.AnchorPoint = Vector2.new(0, 0.5)
 		barLogo.Position = UDim2.new(0, 12, 0.5, 0)
+		barLogo.ZIndex = 5
+		local barDisc = barLogo:FindFirstChildOfClass("Frame")
+		if barDisc then
+			barDisc.ZIndex = 5
+		end
 
 		local barLabel = new("TextLabel", {
 			AnchorPoint = Vector2.new(0, 0.5),
@@ -1007,6 +1010,7 @@ function Library:CreateWindow(config)
 			TextColor3 = Theme.Text,
 			Text = "LIQUID BOUNCE",
 			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 5,
 		})
 		barLabel.Parent = titleBar
 
@@ -1020,8 +1024,9 @@ function Library:CreateWindow(config)
 			Font = Enum.Font.GothamBold,
 			TextSize = 13,
 			TextColor3 = Theme.SubText,
-			Text = "−",
+			Text = "-",
 			AutoButtonColor = false,
+			ZIndex = 5,
 		}, { Util.corner(8) })
 		hideBtn.Parent = titleBar
 		hideBtn.MouseButton1Click:Connect(function() Window:Toggle(false) end)
@@ -1046,46 +1051,53 @@ function Library:CreateWindow(config)
 			local delta = input.Position - dragStart
 			windowRoot.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 		end))
-
-		Window._columnHolder = columnHolder
-		Window._columnLayout = columnLayout
 	end
 
 	-- open / close -------------------------------------------------------
 	local scaleObj = windowRoot:FindFirstChildOfClass("UIScale")
+
 	function Window:Toggle(force)
 		local target = force
 		if target == nil then
 			target = not self._open
 		end
 		self._open = target
+		windowRoot.Visible = true
+
+		local content = self._contentHolder
 		if target then
-			windowRoot.Visible = true
 			Util.tween(windowRoot, 0.25, { GroupTransparency = 0 }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+			if content and content.Visible ~= nil then
+				content.Visible = true
+			end
+			if content and self._isColumns then
+				Util.tween(content, 0.25, { GroupTransparency = 0 }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+			end
 			if scaleObj then
-				Util.tween(scaleObj, 0.25, { Scale = 1 }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+				Util.tween(scaleObj, 0.25, { Scale = self._baseScale }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 			end
 			if self.TitleBar then
-				Util.tween(self.TitleBar, 0.25, { BackgroundTransparency = Theme.CardTransparency }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+				Util.tween(self.TitleBar, 0.25, { GroupTransparency = 0 }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+			end
+		elseif self._isColumns then
+			-- columns fade out, the floating title bar stays so it can be reopened
+			if content then
+				Util.tween(content, 0.2, { GroupTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+			end
+			if scaleObj then
+				Util.tween(scaleObj, 0.2, { Scale = self._baseScale * 0.98 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 			end
 		else
 			Util.tween(windowRoot, 0.2, { GroupTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 			if scaleObj then
-				Util.tween(scaleObj, 0.2, { Scale = 0.96 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				Util.tween(scaleObj, 0.2, { Scale = self._baseScale * 0.96 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 			end
-			if self._isColumns then
-				-- keep the title bar visible so the menu can be reopened by clicking it
-				windowRoot.Visible = true
-				if self.TitleBar then
-					self.TitleBar.BackgroundTransparency = 0.25
+			local root = windowRoot
+			task.delay(0.2, function()
+				if not self._open then
+					root.Visible = false
 				end
-			else
-				task.delay(0.2, function()
-					if not self._open then
-						windowRoot.Visible = false
-					end
-				end)
-			end
+			end)
 		end
 	end
 	function Window:IsOpen()
@@ -1104,12 +1116,25 @@ function Library:CreateWindow(config)
 		end
 	end))
 
+	-- grid layout needs real sizes; refresh on the first frames and resizes
+	if Window._isColumns then
+		task.defer(function()
+			Window:_RelayoutColumns()
+		end)
+		task.delay(0.2, function()
+			Window:_RelayoutColumns()
+		end)
+		windowRoot:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			Window:_RelayoutColumns()
+		end)
+	end
+
 	-- intro animation ----------------------------------------------------
 	windowRoot.GroupTransparency = 1
-	if scaleObj then scaleObj.Scale = 0.94 end
+	if scaleObj then scaleObj.Scale = Window._baseScale * 0.94 end
 	Util.tween(windowRoot, 0.4, { GroupTransparency = 0 }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 	if scaleObj then
-		Util.tween(scaleObj, 0.4, { Scale = 1 }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		Util.tween(scaleObj, 0.4, { Scale = Window._baseScale }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 	end
 
 	-- search -------------------------------------------------------------
@@ -1134,8 +1159,9 @@ function Library:CreateWindow(config)
 					end
 					section._frame.Visible = sectionVisible
 				end
-				if Window._isColumns then
+				if Window._isColumns and tab._column then
 					tab._column.Visible = tabHasMatch
+					tab._searchHidden = not tabHasMatch
 				end
 			end
 		end
@@ -1150,7 +1176,8 @@ function Library:CreateWindow(config)
 		self._selectedTab = tab
 		for _, t in ipairs(self._tabs) do
 			local active = (t == tab)
-			if t._page then
+			-- in column mode every category is on screen at once
+			if t._page and not self._isColumns then
 				t._page.Visible = active
 			end
 			if t._button then
@@ -1174,6 +1201,89 @@ function Library:CreateWindow(config)
 		end
 	end
 
+	-- places columns in an explicit grid: row = floor(i / perRow), col = i % perRow
+	function Window:_RelayoutColumns()
+		if not self._isColumns or not self._columnHolder then
+			return
+		end
+		-- guarding prevents a feedback loop: laying out resizes the columns,
+		-- which fires AbsoluteSize, which would ask for another layout
+		if self._relayouting then
+			return
+		end
+		self._relayouting = true
+		local perRow = math.max(1, self._perRow or 7)
+		local width = self._columnWidth or 186
+		local gap = self._columnGap or 8
+
+		local tabs = {}
+		for _, tab in ipairs(self._tabs) do
+			if tab._column then
+				tabs[#tabs + 1] = tab
+			end
+		end
+		local total = #tabs
+		if total == 0 then
+			self._relayouting = false
+			return
+		end
+
+		local rows = math.ceil(total / perRow)
+		local used = math.min(total, perRow)
+		local gridWidth = used * width + math.max(0, used - 1) * gap
+
+		local scroll = self._columnScroll
+		local viewWidth = scroll and scroll.AbsoluteSize.X or 0
+		local viewHeight = scroll and scroll.AbsoluteSize.Y or 0
+		local offsetX = math.max(0, (viewWidth - gridWidth) / 2)
+
+		-- row heights come from the tallest column in that row
+		local rowHeights = {}
+		for index, tab in ipairs(tabs) do
+			local row = math.floor((index - 1) / perRow) + 1
+			local columnHeight = tab._column.AbsoluteSize.Y
+			if columnHeight <= 0 then
+				columnHeight = 320
+			end
+			rowHeights[row] = math.max(rowHeights[row] or 0, columnHeight)
+		end
+
+		local y = 0
+		for row = 1, rows do
+			local rowHeight = rowHeights[row] or 320
+			for col = 0, perRow - 1 do
+				local index = (row - 1) * perRow + col + 1
+				local tab = tabs[index]
+				if tab then
+					tab._column.Position = UDim2.new(0, offsetX + col * (width + gap), 0, y)
+					if tab._column.Size.X.Offset ~= width then
+						tab._column.Size = UDim2.new(0, width, 0, 0)
+					end
+				end
+			end
+			y = y + rowHeight + gap
+		end
+		if rows > 0 then
+			y = y - gap
+		end
+
+		local contentHeight = math.max(y, viewHeight)
+
+		if scroll then
+			scroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+			scroll.CanvasSize = UDim2.new(0, math.max(gridWidth + 24, viewWidth), 0, contentHeight + 16)
+		end
+		self._columnHolder.Size = UDim2.new(0, math.max(gridWidth + 24, viewWidth), 0, contentHeight + 16)
+
+		if self._sheet then
+			local sheetHeight = contentHeight + 16
+			local sheetWidth = math.min(gridWidth + 40, math.max(viewWidth, gridWidth + 40))
+			self._sheet.Size = UDim2.new(0, sheetWidth, 0, sheetHeight)
+			self._sheet.Position = UDim2.new(0.5, 0, 0.5, 0)
+		end
+		self._relayouting = false
+	end
+
 	function Window:GetTab(name)
 		for _, t in ipairs(self._tabs) do
 			if t.Title:lower() == tostring(name):lower() then
@@ -1191,17 +1301,15 @@ function Library:CreateWindow(config)
 		local page, button, label, iconLabel, indicator, column
 
 		if self._isColumns then
-			-- one column per category, sized by its content (max 3 columns wide)
-			column = new("ScrollingFrame", {
+			-- one column per category: positioned by _RelayoutColumns, sized by content
+			column = new("Frame", {
+				Position = UDim2.new(0, 0, 0, 0),
 				Size = UDim2.new(0, 186, 0, 0),
 				AutomaticSize = Enum.AutomaticSize.Y,
-				CanvasSize = UDim2.new(0, 0, 0, 0),
-				AutomaticCanvasSize = Enum.AutomaticSize.Y,
 				BackgroundTransparency = 1,
 				BorderSizePixel = 0,
-				ScrollBarThickness = 0,
 				ClipsDescendants = false,
-				LayoutOrder = #self._tabs + 1,
+				ZIndex = 2,
 			}, { Util.list(Enum.FillDirection.Vertical, 8) })
 			column.Parent = pageHolder
 
@@ -1351,13 +1459,20 @@ function Library:CreateWindow(config)
 		if not Window._isColumns and #Window._tabs == 1 then
 			Window:SelectTab(Tab)
 		end
+		if Window._isColumns then
+			-- defer: sizing right away would fire AbsoluteSize inside the layout pass
+			task.defer(function()
+				Window:_RelayoutColumns()
+			end)
+		end
 		return Tab
 	end
 
 	function Window:SetScale(scale)
+		self._baseScale = Util.clamp(tonumber(scale) or 1, 0.4, 2.5)
 		local uiScale = windowRoot:FindFirstChildOfClass("UIScale")
 		if uiScale then
-			uiScale.Scale = Util.clamp(tonumber(scale) or 1, 0.4, 2.5)
+			uiScale.Scale = self._baseScale
 		end
 	end
 
@@ -1608,10 +1723,16 @@ local function addSlider(Tab, Section, data)
 	data = data or {}
 	local title = opt(data, "Slider", "Title", "Text", "Name")
 	local callback = opt(data, nil, "Callback", "Function")
-	local min = opt(data, 0, "Min", "Minimum")
-	local max = opt(data, 100, "Max", "Maximum")
-	local step = opt(data, 1, "Step", "Increment")
-	local value = opt(data, min, "Default", "Value")
+	local min = tonumber(opt(data, 0, "Min", "Minimum")) or 0
+	local max = tonumber(opt(data, 100, "Max", "Maximum")) or 100
+	if max < min then
+		min, max = max, min
+	end
+	local step = tonumber(opt(data, 1, "Step", "Increment")) or 1
+	if step <= 0 then
+		step = 1
+	end
+	local value = tonumber(opt(data, min, "Default", "Value")) or min
 	value = Util.clamp(Util.snap(value, min, step), min, max)
 	local suffix = opt(data, "", "Suffix", "Unit")
 	local decimals = Util.decimals(step)
@@ -1786,6 +1907,9 @@ local function addDropdown(Tab, Section, data, multi)
 	local title = opt(data, "Dropdown", "Title", "Text", "Name")
 	local callback = opt(data, nil, "Callback", "Function")
 	local options = opt(data, {}, "Options", "Values", "Items")
+	if type(options) ~= "table" then
+		options = {}
+	end
 	local default = opt(data, nil, "Default", "Value")
 
 	local selected = {}
@@ -1982,9 +2106,11 @@ local function addDropdown(Tab, Section, data, multi)
 		local height = math.min(220, math.max(40, #options * 30 + 12))
 		showPopup(box, popup, box.AbsoluteSize.X, height)
 		-- reset the arrow whenever the popup goes away (click outside, tab change, ...)
-		popup.Destroying:Connect(function()
-			arrow.Rotation = 90
-		end)
+		if popup.Destroying then
+			popup.Destroying:Connect(function()
+				arrow.Rotation = 90
+			end)
+		end
 	end)
 
 	render()
@@ -1999,8 +2125,7 @@ local function addKeybind(Tab, Section, data)
 	data = data or {}
 	local title = opt(data, "Keybind", "Title", "Text", "Name")
 	local callback = opt(data, nil, "Callback", "Function")
-	local key = opt(data, nil, "Default", "Key", "Value")
-	key = Util.toKey(key)
+	local key = Util.toKey(opt(data, nil, "Default", "Key", "Value"))
 
 	local row = makeRow(Section._body, 34)
 	makeLabel(row, title, 4, 80)
@@ -2094,7 +2219,7 @@ local function addTextbox(Tab, Section, data)
 	local title = opt(data, "Textbox", "Title", "Text", "Name")
 	local callback = opt(data, nil, "Callback", "Function")
 	local placeholder = opt(data, "Type here...", "Placeholder")
-	local value = opt(data, "", "Default", "Value")
+	local value = tostring(opt(data, "", "Default", "Value") or "")
 
 	local row = makeRow(Section._body, 52)
 	local titleLabel = makeLabel(row, title, 4, 0)
