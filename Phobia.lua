@@ -1760,29 +1760,49 @@ Phobia.IsMouseOverFrame = LPH_NO_VIRTUALIZE(function(self , Frame)
 	end;
 end);
 
+-- Pure-Lua signal: the engine blocks Instance.new('BindableEvent') and any other
+-- remote/bindable classes ("lua violation: blocked class ..."), so signals are
+-- implemented in plain tables. Handlers run in isolated threads, matching the
+-- fire-and-forget semantics of a BindableEvent.
 Phobia.CreateSignal = LPH_NO_VIRTUALIZE(function(self , DefaultValue)
-	local __cache = Instance.new('BindableEvent');
+	local Handlers = {};
 	local bind = {
 		Value = DefaultValue,
-		__event = __cache
 	};
 
 	function bind:GetValue()
 		return bind.Value;
 	end;
 
+	function bind:Fire(...)
+		for _ , Handler in pairs(Handlers) do
+			task.spawn(function(...)
+				pcall(Handler , ...);
+			end , ...);
+		end;
+	end;
+
 	function bind:SetValue(f)
 		bind.Value = f;
 
-		return __cache:Fire(f);
+		return bind:Fire(f);
 	end;
 
 	function bind:Connect(f)
-		local signal = __cache.Event:Connect(f);
+		local Connection = {
+			Connected = true,
+		};
 
-		Phobia:AddSignal(signal);
+		function Connection:Disconnect()
+			Connection.Connected = false;
+			Handlers[Connection] = nil;
+		end;
 
-		return signal;
+		Handlers[Connection] = f;
+
+		Phobia:AddSignal(Connection);
+
+		return Connection;
 	end;
 
 	return bind;
@@ -1915,9 +1935,21 @@ Phobia.GetCalculatePosition = LPH_NO_VIRTUALIZE(function(planePos, planeNormal, 
 	return rayOrigin + (a * rayDirection);
 end);
 
+Phobia.DummySignal = function(self)
+	local Dummy = {
+		Connected = true,
+	};
+
+	function Dummy:Disconnect()
+		Dummy.Connected = false;
+	end;
+
+	return Phobia:AddSignal(Dummy);
+end;
+
 Phobia.__CreateBlurModuleImpl = LPH_NO_VIRTUALIZE(function(self , Frame , Signal)
 	if not Phobia.EnabledBlur then
-		return Phobia:AddSignal(Instance.new('BindableEvent').Event:Connect(function() return "nl"; end));	
+		return Phobia:DummySignal();
 	end;
 
 	local Part = Instance.new('Part',Phobia.BlurModuleParent);
@@ -2036,7 +2068,7 @@ Phobia.CreateBlurModule = LPH_NO_VIRTUALIZE(function(self , Frame , Signal)
 	if not __ok then
 		warn('[Phobia] blur module disabled: ' .. tostring(__result));
 
-		return Phobia:AddSignal(Instance.new('BindableEvent').Event:Connect(function() return "nl"; end));
+		return Phobia:DummySignal();
 	end;
 
 	return __result;
