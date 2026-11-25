@@ -47,22 +47,27 @@
 ]]
 
 --// Luau / executor compatibility shims -------------------------------------------------
+-- IMPORTANT: write-free — the engine may freeze globals and standard libraries
+-- ("attempt to modify a readonly table"), so nothing here assigns to globals
+-- or to `table` / `math` / `string`. Everything becomes a local.
+local LPH_NO_LOCAL = nil;
 local LPH_NO_VIRTUALIZE = (type(LPH_NO_VIRTUALIZE) == 'function' and LPH_NO_VIRTUALIZE) or function(f) return f end;
-getgenv().LPH_NO_VIRTUALIZE = getgenv().LPH_NO_VIRTUALIZE or LPH_NO_VIRTUALIZE;
 
-cloneref = cloneref or function(i) return i end;
-gethui = gethui or get_hidden_gui;
-getcustomasset = getcustomasset or getsynasset;
-getgenv = getgenv or getfenv;
+local cloneref = (type(cloneref) == 'function' and cloneref) or function(i) return i end;
+local gethui = (type(gethui) == 'function' and gethui) or nil;
+local getgenv = (type(getgenv) == 'function' and getgenv)
+	or (type(getfenv) == 'function' and function() return getfenv() end)
+	or function() return {} end;
 
--- small Luau polyfills (present in the engine, safe to redefine otherwise)
-table.clear = table.clear or function(t)
+-- Luau ships table.clear / table.find natively; local aliases keep us independent
+-- from any attempts to patch frozen standard libraries.
+local TableClear = (type(table.clear) == 'function' and table.clear) or function(t)
 	for k in next , t do
 		t[k] = nil;
 	end;
 end;
 
-table.find = table.find or function(t , value , init)
+local TableFind = (type(table.find) == 'function' and table.find) or function(t , value , init)
 	for i = (init or 1) , #t do
 		if t[i] == value then
 			return i;
@@ -71,6 +76,11 @@ table.find = table.find or function(t , value , init)
 
 	return nil;
 end;
+
+-- optional cross-script exposure; silently skipped when the env is read-only
+pcall(function()
+	getgenv().LPH_NO_VIRTUALIZE = getgenv().LPH_NO_VIRTUALIZE or LPH_NO_VIRTUALIZE;
+end);
 
 local Phobia = {};
 
@@ -149,6 +159,20 @@ do
 
 	local SessionTree = nil;
 
+	local function DeepCopyTable(Source)
+		local Copy = {};
+
+		for Key , Value in pairs(Source) do
+			if type(Value) == 'table' then
+				Copy[Key] = DeepCopyTable(Value);
+			else
+				Copy[Key] = Value;
+			end;
+		end;
+
+		return Copy;
+	end;
+
 	local function LoadTree()
 		if SessionTree then
 			return SessionTree;
@@ -160,7 +184,8 @@ do
 			end);
 
 			if __ok and typeof(__tree) == 'table' and type(__tree.Files) == 'table' and type(__tree.Dirs) == 'table' then
-				SessionTree = __tree;
+				-- copy: database.read may return a read-only snapshot
+				SessionTree = DeepCopyTable(__tree);
 				return SessionTree;
 			end;
 		end;
@@ -1160,7 +1185,7 @@ function Encryption.new(data: string)
 
 	local concatbyte = table.concat(bytes,'?');
 
-	table.clear(bytes);
+	TableClear(bytes);
 
 	return "{"..tostring(encrypt_seed + 72667).."}?"..concatbyte;
 end;
@@ -1182,7 +1207,7 @@ function Encryption.reverse(data: string)
 
 	local data = table.concat(ks);
 
-	table.clear(ks);
+	TableClear(ks);
 
 	return data;
 end;
@@ -1870,7 +1895,7 @@ Phobia.ProcessParams = LPH_NO_VIRTUALIZE(function(self , Params , Fixed)
 		k[i] = Params[i] or v;
 	end;
 
-	table.clear(Fixed);
+	TableClear(Fixed);
 
 	return k;
 end);
@@ -3423,7 +3448,7 @@ function Phobia:RegisiterHandler(Handler: Frame , Signal)
 		end;
 
 		local IsBlacklist = LPH_NO_VIRTUALIZE(function(v)
-			return Config.Blacklist and (Config.Blacklist[v] or table.find(Config.Blacklist,v))
+			return Config.Blacklist and (Config.Blacklist[v] or TableFind(Config.Blacklist,v))
 		end);
 
 		KeybindLib:Update()
@@ -3900,7 +3925,7 @@ function Phobia:RegisiterHandler(Handler: Frame , Signal)
 
 		DropdownLib.IsMatch = LPH_NO_VIRTUALIZE(function(v1)
 			if typeof(Config.Default) =='table' then
-				if Config.Default[v1] or table.find(Config.Default , v1) then
+				if Config.Default[v1] or TableFind(Config.Default , v1) then
 					return true;
 				end
 			end
@@ -3921,8 +3946,8 @@ function Phobia:RegisiterHandler(Handler: Frame , Signal)
 				v:Disconnect();
 			end;
 
-			table.clear(DropdownLib.Signals);
-			table.clear(DropdownLib.Refuse);
+			TableClear(DropdownLib.Signals);
+			TableClear(DropdownLib.Refuse);
 
 			local Lastone;
 			for i,Value in next , Config.Values do
@@ -4235,7 +4260,7 @@ Phobia.ParseDropdown = LPH_NO_VIRTUALIZE(function(value)
 
 			Out = table.concat(x,' , ');
 
-			table.clear(x);
+			TableClear(x);
 		else
 			local x = {};
 
@@ -4247,7 +4272,7 @@ Phobia.ParseDropdown = LPH_NO_VIRTUALIZE(function(value)
 
 			Out = table.concat(x,' , ');
 
-			table.clear(x)
+			TableClear(x)
 
 			if not Out:byte() then
 				Out = 'Select';
@@ -6630,7 +6655,7 @@ function Phobia:CreateWindow(Config)
 				v:Disconnect();
 			end
 
-			table.clear(ConfigLib.Signals);
+			TableClear(ConfigLib.Signals);
 
 			local ConfigList = {};
 			for i,v in next , listfiles(Window.ConfigFolder) do
@@ -6888,7 +6913,7 @@ function Phobia:CreateWindow(Config)
 				end)))
 			end;
 
-			table.clear(ConfigList);
+			TableClear(ConfigList);
 		end;
 		
 		task.delay(1,function()
@@ -7879,6 +7904,8 @@ function Phobia:Unload()
 	end;
 end;
 
-getgenv().Phobia = Phobia;
+pcall(function()
+	getgenv().Phobia = Phobia;
+end);
 
 return Phobia;

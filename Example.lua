@@ -18,8 +18,11 @@
 --  1. Загрузка библиотеки
 --========================================================================================
 
--- Если библиотека уже загружена этим же инжектом — переиспользуем её
-local Phobia = getgenv().Phobia;
+-- Если библиотека уже загружена этим же инжектом — переиспользуем её.
+-- Только чтение: запись в окружение запрещена в песочнице (readonly table).
+local Phobia = (type(getgenv) == 'function' and getgenv().Phobia)
+	or (type(_G) == 'table' and _G.Phobia)
+	or nil;
 
 if not Phobia then
 	-- вариант 1: локальный файл рядом (некоторые окружения отдают readfile)
@@ -41,8 +44,12 @@ if not Phobia then
 end;
 
 -- повторный инжект: выгружаем прошлый запуск (окно, события, индикаторы)
-if getgenv().PhobiaExample then
-	pcall(getgenv().PhobiaExample);
+local PrevUnload = (type(getgenv) == 'function' and getgenv().PhobiaExample)
+	or (type(_G) == 'table' and _G.PhobiaExample)
+	or nil;
+
+if PrevUnload then
+	pcall(PrevUnload);
 end;
 
 --========================================================================================
@@ -67,6 +74,8 @@ Window:AddTabLabel('-- hvh setup --');
 --========================================================================================
 --  3. Общие флаги состояния
 --========================================================================================
+
+local UnloadFunction = nil;   -- заполняется внизу; кнопка unload держит upvalue
 
 local State = {
 	DesyncLeft = 58,
@@ -561,8 +570,8 @@ MiscRight:AddButton({
 	Icon = 'logout',
 	ToolTip = 'Unloads the UI and restores all cheat settings',
 	Callback = function()
-		if getgenv().PhobiaExample then
-			getgenv().PhobiaExample();
+		if UnloadFunction then
+			UnloadFunction();
 		end;
 	end,
 });
@@ -655,8 +664,8 @@ if client and client.set_event_callback then
 	end);
 end;
 
--- функция полной выгрузки (доступна и снаружи: getgenv().PhobiaExample())
-getgenv().PhobiaExample = function()
+-- функция полной выгрузки (доступна и снаружи через PhobiaExample, если env позволяет запись)
+UnloadFunction = function()
 	pcall(function()
 		if aa and aa.reset then aa.reset(); end;
 		if rage and rage.reset then rage.reset(); end;
@@ -669,5 +678,25 @@ getgenv().PhobiaExample = function()
 		Phobia:Unload();
 	end);
 
-	getgenv().PhobiaExample = nil;
+	UnloadFunction = nil;
+
+	-- снимаем экспорт, чтобы повторный инжект не нашёл мёртвую функцию
+	pcall(function()
+		if type(getgenv) == 'function' then
+			getgenv().PhobiaExample = nil;
+		end;
+	end);
+
+	pcall(function()
+		_G.PhobiaExample = nil;
+	end);
 end;
+
+-- read-only-safe экспорт: попытка записи в getgenv/_G не уронит скрипт
+pcall(function()
+	getgenv().PhobiaExample = UnloadFunction;
+end);
+
+pcall(function()
+	_G.PhobiaExample = UnloadFunction;
+end);
