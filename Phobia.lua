@@ -77,6 +77,21 @@ local TableFind = (type(table.find) == 'function' and table.find) or function(t 
 	return nil;
 end;
 
+-- Luau removed math.atan2; engines differ, so resolve it once
+local Atan2 = math.atan2 or function(dy , dx)
+	return math.atan(dy , dx);
+end;
+
+local Clamp = math.clamp or function(Value , Min , Max)
+	if Value < Min then
+		return Min;
+	elseif Value > Max then
+		return Max;
+	end;
+
+	return Value;
+end;
+
 -- optional cross-script exposure; silently skipped when the env is read-only
 pcall(function()
 	getgenv().LPH_NO_VIRTUALIZE = getgenv().LPH_NO_VIRTUALIZE or LPH_NO_VIRTUALIZE;
@@ -899,10 +914,17 @@ end;
 
 Phobia.IconRecords = setmetatable({} , { __mode = 'k' });
 
--- Removes a previously drawn icon from a container
+local ICON_HOLDER_PREFIX = 'PhobiaIcon_';
+
+-- Removes a previously drawn icon from a container.
+-- Uses the holder NAME (no instance attributes: engine proxies may not support them).
 function Phobia.Icons.Clear(Target)
+	if typeof(Target) ~= 'Instance' then
+		return;
+	end;
+
 	for _ , Child in ipairs(Target:GetChildren()) do
-		if Child:GetAttribute('PhobiaIconDrawn') then
+		if string.sub(tostring(Child.Name) , 1 , #ICON_HOLDER_PREFIX) == ICON_HOLDER_PREFIX then
 			Phobia.IconRecords[Target] = nil;
 			Child:Destroy();
 		end;
@@ -910,7 +932,14 @@ function Phobia.Icons.Clear(Target)
 end;
 
 -- Draws an icon into any Frame / TextLabel / TextButton / ImageButton
--- Opts: { Size = px, Color = Color3, Transparency = number, ZIndex = number, OffsetX, OffsetY }
+-- Opts: { Size = px, Color = Color3, Transparency = number, ZIndex = number }
+--
+-- Implementation notes (engine-compatibility):
+--   * only Frame + UICorner instances are used (engine whitelist)
+--   * no value objects (NumberValue/Color3Value) and no instance attributes —
+--     animations tween the stroke frames directly through TweenService
+--   * the icon is built inside a pcall BEFORE the target content is cleared,
+--     so any engine-specific failure keeps the element visible (letter fallback)
 function Phobia:ApplyIcon(Target , Name , Opts)
 	if typeof(Target) ~= 'Instance' then
 		return nil;
@@ -952,125 +981,129 @@ function Phobia:ApplyIcon(Target , Name , Opts)
 
 	local Transparency = Opts.Transparency;
 
-	if Transparency == nil and Target:IsA('TextLabel') then
+	if Transparency == nil and (Target:IsA('TextLabel') or Target:IsA('TextButton')) then
 		Transparency = Target.TextTransparency;
 	end;
 
 	Transparency = Transparency or 0;
 
+	local BuildOk , BuildResult = pcall(function()
+		local BaseZ = Opts.ZIndex or Target.ZIndex or 1;
+
+		local Holder = Instance.new('Frame');
+		Holder.Name = ICON_HOLDER_PREFIX .. Name;
+		Holder.AnchorPoint = Vector2.new(0.5 , 0.5);
+		Holder.Position = UDim2.fromScale(0.5 , 0.5);
+		Holder.Size = UDim2.fromOffset(Size , Size);
+		Holder.BackgroundTransparency = 1;
+		Holder.BorderSizePixel = 0;
+		Holder.ZIndex = BaseZ;
+
+		local Frames = {};
+		local K = Size / GRID;
+		local Ops = IconOps(Spec);
+
+		local function MakeSeg(Cx , Cy , Len , Rot , Width)
+			local Frame = Instance.new('Frame');
+			Frame.Name = 's';
+			Frame.AnchorPoint = Vector2.new(0.5 , 0.5);
+			Frame.Position = UDim2.fromOffset(Cx , Cy);
+			Frame.Size = UDim2.fromOffset(math.max(Len , 0.1) , Width);
+			Frame.Rotation = Rot;
+			Frame.BackgroundColor3 = Color;
+			Frame.BackgroundTransparency = Transparency;
+			Frame.BorderSizePixel = 0;
+			Frame.ZIndex = BaseZ + 1;
+			Frame.Parent = Holder;
+
+			local Corner = Instance.new('UICorner');
+			Corner.CornerRadius = UDim.new(1 , 0);
+			Corner.Parent = Frame;
+
+			Frames[#Frames + 1] = Frame;
+		end;
+
+		local function MakeDot(Cx , Cy , D)
+			local Frame = Instance.new('Frame');
+			Frame.Name = 'd';
+			Frame.AnchorPoint = Vector2.new(0.5 , 0.5);
+			Frame.Position = UDim2.fromOffset(Cx , Cy);
+			Frame.Size = UDim2.fromOffset(math.max(D , 0.6) , math.max(D , 0.6));
+			Frame.BackgroundColor3 = Color;
+			Frame.BackgroundTransparency = Transparency;
+			Frame.BorderSizePixel = 0;
+			Frame.ZIndex = BaseZ + 1;
+			Frame.Parent = Holder;
+
+			local Corner = Instance.new('UICorner');
+			Corner.CornerRadius = UDim.new(1 , 0);
+			Corner.Parent = Frame;
+
+			Frames[#Frames + 1] = Frame;
+		end;
+
+		local function MakeRect(X , Y , W , H , Rad)
+			local Frame = Instance.new('Frame');
+			Frame.Name = 'r';
+			Frame.Position = UDim2.fromOffset(X , Y);
+			Frame.Size = UDim2.fromOffset(math.max(W , 0.6) , math.max(H , 0.6));
+			Frame.BackgroundColor3 = Color;
+			Frame.BackgroundTransparency = Transparency;
+			Frame.BorderSizePixel = 0;
+			Frame.ZIndex = BaseZ + 1;
+			Frame.Parent = Holder;
+
+			if Rad and Rad > 0.01 then
+				local Corner = Instance.new('UICorner');
+				Corner.CornerRadius = UDim.new(0 , Rad * K);
+				Corner.Parent = Frame;
+			end;
+
+			Frames[#Frames + 1] = Frame;
+		end;
+
+		for _ , Op in ipairs(Ops) do
+			if Op.t == 's' then
+				local Pts = Op.p;
+				local Width = math.max(Op.w * K , 1);
+
+				for i = 1 , (#Pts - 1) do
+					local x1 , y1 = Pts[i][1] * K , Pts[i][2] * K;
+					local x2 , y2 = Pts[i + 1][1] * K , Pts[i + 1][2] * K;
+					local dx , dy = x2 - x1 , y2 - y1;
+					local Len = math.sqrt(dx * dx + dy * dy);
+
+					if Len > 0.05 then
+						MakeSeg((x1 + x2) / 2 , (y1 + y2) / 2 , Len , math.deg(Atan2(dy , dx)) , Width);
+					end;
+				end;
+			elseif Op.t == 'd' then
+				MakeDot(Op.x * K , Op.y * K , Op.r * 2 * K);
+			elseif Op.t == 'r' then
+				MakeRect(Op.x * K , Op.y * K , Op.w * K , Op.h * K , Op.rad);
+			end;
+		end;
+
+		return { Holder = Holder , Frames = Frames };
+	end);
+
+	if not BuildOk then
+		warn('[Phobia] icon "' .. tostring(Name) .. '" render failed: ' .. tostring(BuildResult));
+
+		-- visible fallback so the element is not blank
+		if Target:IsA('TextLabel') or Target:IsA('TextButton') then
+			Target.Text = string.upper(string.sub(Name , 1 , 1));
+		end;
+
+		return nil;
+	end;
+
+	local Holder = BuildResult.Holder;
+	local Frames = BuildResult.Frames;
+
+	-- commit: clear the old content only after a successful build
 	if Target:IsA('TextLabel') or Target:IsA('TextButton') then
 		Target.Text = '';
-	end;
-
-	local BaseZ = Opts.ZIndex or Target.ZIndex or 1;
-
-	local Holder = Instance.new('Frame');
-	Holder.Name = 'PhobiaIcon_' .. Name;
-	Holder.AnchorPoint = Vector2.new(0.5 , 0.5);
-	Holder.Position = UDim2.fromScale(0.5 , 0.5);
-	Holder.Size = UDim2.fromOffset(Size , Size);
-	Holder.BackgroundTransparency = 1;
-	Holder.BorderSizePixel = 0;
-	Holder.ZIndex = BaseZ;
-	Holder:SetAttribute('PhobiaIconDrawn' , true);
-	Holder:SetAttribute('PhobiaIconName' , Name);
-	-- adapter flags (PlayAnimate routes icon tweens through the vector values)
-	Target:SetAttribute('PhobiaIconDrawn' , true);
-	Target:SetAttribute('PhobiaIconName' , Name);
-
-	local TValue = Instance.new('NumberValue');
-	TValue.Name = '_TransparencyValue';
-	TValue.Value = Transparency;
-	TValue.Parent = Holder;
-
-	local CValue = Instance.new('Color3Value');
-	CValue.Name = '_ColorValue';
-	CValue.Value = Color;
-	CValue.Parent = Holder;
-
-	local Frames = {};
-	local K = Size / GRID;
-	local Ops = IconOps(Spec);
-
-	local function MakeSeg(Cx , Cy , Len , Rot , Width)
-		local Frame = Instance.new('Frame');
-		Frame.Name = 's';
-		Frame.AnchorPoint = Vector2.new(0.5 , 0.5);
-		Frame.Position = UDim2.fromOffset(Cx , Cy);
-		Frame.Size = UDim2.fromOffset(math.max(Len , 0.1) , Width);
-		Frame.Rotation = Rot;
-		Frame.BackgroundColor3 = Color;
-		Frame.BackgroundTransparency = Transparency;
-		Frame.BorderSizePixel = 0;
-		Frame.ZIndex = BaseZ + 1;
-
-		local Corner = Instance.new('UICorner');
-		Corner.CornerRadius = UDim.new(1 , 0);
-		Corner.Parent = Frame;
-
-		Frame.Parent = Holder;
-		Frames[#Frames + 1] = Frame;
-	end;
-
-	local function MakeDot(Cx , Cy , D)
-		local Frame = Instance.new('Frame');
-		Frame.Name = 'd';
-		Frame.AnchorPoint = Vector2.new(0.5 , 0.5);
-		Frame.Position = UDim2.fromOffset(Cx , Cy);
-		Frame.Size = UDim2.fromOffset(math.max(D , 0.6) , math.max(D , 0.6));
-		Frame.BackgroundColor3 = Color;
-		Frame.BackgroundTransparency = Transparency;
-		Frame.BorderSizePixel = 0;
-		Frame.ZIndex = BaseZ + 1;
-
-		local Corner = Instance.new('UICorner');
-		Corner.CornerRadius = UDim.new(1 , 0);
-		Corner.Parent = Frame;
-
-		Frame.Parent = Holder;
-		Frames[#Frames + 1] = Frame;
-	end;
-
-	local function MakeRect(X , Y , W , H , Rad)
-		local Frame = Instance.new('Frame');
-		Frame.Name = 'r';
-		Frame.Position = UDim2.fromOffset(X , Y);
-		Frame.Size = UDim2.fromOffset(math.max(W , 0.6) , math.max(H , 0.6));
-		Frame.BackgroundColor3 = Color;
-		Frame.BackgroundTransparency = Transparency;
-		Frame.BorderSizePixel = 0;
-		Frame.ZIndex = BaseZ + 1;
-
-		if Rad and Rad > 0.01 then
-			local Corner = Instance.new('UICorner');
-			Corner.CornerRadius = UDim.new(0 , Rad * K);
-			Corner.Parent = Frame;
-		end;
-
-		Frame.Parent = Holder;
-		Frames[#Frames + 1] = Frame;
-	end;
-
-	for _ , Op in ipairs(Ops) do
-		if Op.t == 's' then
-			local Pts = Op.p;
-			local Width = math.max(Op.w * K , 1);
-
-			for i = 1 , (#Pts - 1) do
-				local x1 , y1 = Pts[i][1] * K , Pts[i][2] * K;
-				local x2 , y2 = Pts[i + 1][1] * K , Pts[i + 1][2] * K;
-				local dx , dy = x2 - x1 , y2 - y1;
-				local Len = math.sqrt(dx * dx + dy * dy);
-
-				if Len > 0.05 then
-					MakeSeg((x1 + x2) / 2 , (y1 + y2) / 2 , Len , math.deg(math.atan2(dy , dx)) , Width);
-				end;
-			end;
-		elseif Op.t == 'd' then
-			MakeDot(Op.x * K , Op.y * K , Op.r * 2 * K);
-		elseif Op.t == 'r' then
-			MakeRect(Op.x * K , Op.y * K , Op.w * K , Op.h * K , Op.rad);
-		end;
 	end;
 
 	Holder.Parent = Target;
@@ -1078,41 +1111,34 @@ function Phobia:ApplyIcon(Target , Name , Opts)
 	local Record = {
 		Name = Name,
 		Root = Holder,
-		Value = TValue,
-		ColorValue = CValue,
 		Frames = Frames,
-		SetColor = function(_, C)
-			CValue.Value = C;
-		end,
-		SetTransparency = function(_, T)
-			TValue.Value = T;
-		end,
-		Destroy = function(_)
-			Phobia.IconRecords[Target] = nil;
-			Holder:Destroy();
-		end
 	};
 
-	TValue.Changed:Connect(function(V)
-		V = math.clamp(V , 0 , 1);
+	function Record.SetColor(_ , C)
+		for _ , Frame in ipairs(Frames) do
+			Frame.BackgroundColor3 = C;
+		end;
+	end;
+
+	function Record.SetTransparency(_ , T)
+		T = Clamp(T , 0 , 1);
 
 		for _ , Frame in ipairs(Frames) do
-			Frame.BackgroundTransparency = V;
+			Frame.BackgroundTransparency = T;
 		end;
-	end);
+	end;
 
-	CValue.Changed:Connect(function(V)
-		for _ , Frame in ipairs(Frames) do
-			Frame.BackgroundColor3 = V;
-		end;
-	end);
+	function Record.Destroy(_)
+		Phobia.IconRecords[Target] = nil;
+		Holder:Destroy();
+	end;
 
 	Phobia.IconRecords[Target] = Record;
 
 	return Record;
 end;
 
--- TweenService adapter: lets the UI tween drawn icons exactly like text icons
+-- TweenService adapter: lets the UI animate drawn icons exactly like text icons
 -- (PlayAnimate on an icon container handles TextTransparency / ImageTransparency / TextColor3)
 function Phobia.Icons.Animate(Target , Info , Property)
 	local Record = Phobia.IconRecords[Target];
@@ -1123,28 +1149,61 @@ function Phobia.Icons.Animate(Target , Info , Property)
 
 	local Fallback = Info or TweenInfo.new(0.25);
 	local MainTween = nil;
+	local TargetT = nil;
+	local TargetTKey = nil;
+	local TargetC = nil;
 	local Others = nil;
 
 	for Key , Value in pairs(Property) do
 		if Key == 'TextTransparency' or Key == 'ImageTransparency' then
-			local TweenA = TweenService:Create(Record.Value , Fallback , { Value = Value });
-			local TweenB = TweenService:Create(Target , Fallback , { [Key] = Value });
-
-			TweenA:Play();
-			TweenB:Play();
-
-			MainTween = MainTween or TweenA;
+			TargetT = Value;
+			TargetTKey = Key;
 		elseif Key == 'TextColor3' then
-			local TweenA = TweenService:Create(Record.ColorValue , Fallback , { Value = Value });
-			local TweenB = TweenService:Create(Target , Fallback , { TextColor3 = Value });
-
-			TweenA:Play();
-			TweenB:Play();
-
-			MainTween = MainTween or TweenA;
+			TargetC = Value;
 		else
 			Others = Others or {};
 			Others[Key] = Value;
+		end;
+	end;
+
+	if TargetT ~= nil then
+		-- keep the host label in sync (visibility gates watch its transparency)
+		local MirrorProps = nil;
+
+		if TargetTKey == 'ImageTransparency' and (Target:IsA('ImageLabel') or Target:IsA('ImageButton')) then
+			MirrorProps = { ImageTransparency = TargetT };
+		elseif Target:IsA('TextLabel') or Target:IsA('TextButton') then
+			MirrorProps = { TextTransparency = TargetT };
+		end;
+
+		if MirrorProps then
+			local LabelTween = TweenService:Create(Target , Fallback , MirrorProps);
+
+			LabelTween:Play();
+
+			MainTween = LabelTween;
+		end;
+
+		for _ , Frame in ipairs(Record.Frames) do
+			local T = TweenService:Create(Frame , Fallback , { BackgroundTransparency = TargetT });
+
+			T:Play();
+		end;
+	end;
+
+	if TargetC ~= nil then
+		if Target:IsA('TextLabel') or Target:IsA('TextButton') then
+			local LabelTween = TweenService:Create(Target , Fallback , { TextColor3 = TargetC });
+
+			LabelTween:Play();
+
+			MainTween = MainTween or LabelTween;
+		end;
+
+		for _ , Frame in ipairs(Record.Frames) do
+			local T = TweenService:Create(Frame , Fallback , { BackgroundColor3 = TargetC });
+
+			T:Play();
 		end;
 	end;
 
@@ -1842,7 +1901,7 @@ Phobia.CreateInput = LPH_NO_VIRTUALIZE(function(self , Frame , Callback)
 end);
 
 Phobia.PlayAnimate = LPH_NO_VIRTUALIZE(function(Self , Info , Property)
-	if typeof(Self) == 'Instance' and Self:GetAttribute('PhobiaIconDrawn') then
+	if typeof(Self) == 'Instance' and Phobia.IconRecords[Self] then
 		return Phobia.Icons.Animate(Self , Info or TweenInfo.new(0.25) , Property);
 	end;
 
@@ -6678,7 +6737,7 @@ function Phobia:CreateWindow(Config)
 			end;
 			
 			for i,v in next,ConfigMenu:GetChildren() do
-				if v:GetAttribute('ConfigItem') then
+				if string.sub(tostring(v.Name) , 1 , 9) == 'PhobiaCfg' then
 					v:Destroy();
 				end;
 			end;
@@ -6711,14 +6770,13 @@ function Phobia:CreateWindow(Config)
 				local BasedLabel = Instance.new("TextLabel")
 				local UIStroke = Instance.new("UIStroke")
 
-				ConfigItemFrame.Name = Phobia.RandomString();
+				ConfigItemFrame.Name = 'PhobiaCfg' .. tostring(Phobia.RandomString());
 				ConfigItemFrame.Parent = ConfigMenu
 				ConfigItemFrame.BackgroundColor3 = Color3.fromRGB(21, 20, 27)
 				ConfigItemFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
 				ConfigItemFrame.BorderSizePixel = 0
 				ConfigItemFrame.Size = UDim2.new(1, -10, 0, 30)
-				ConfigItemFrame.ZIndex = 153
-				ConfigItemFrame:SetAttribute('ConfigItem',true);
+				ConfigItemFrame.ZIndex = 153;
 
 				BasedHandler.Name = Phobia.RandomString();
 				BasedHandler.Parent = ConfigItemFrame
